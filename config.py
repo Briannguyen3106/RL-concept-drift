@@ -103,7 +103,7 @@ MC_GAMMA   = 0.9    # Discount factor
 MC_ALPHA   = 0.1    # Learning rate cho H update
 MC_TEMP_START = 2.0    # Temperature ban đầu (explore nhiều)
 MC_TEMP_END   = 0.5    # Temperature cuối (exploit nhiều)
-MC_TEMP_DECAY = 0.95   # Decay mỗi episode
+MC_TEMP_DECAY = 0.995   # Decay mỗi episode
 
 MC_EPISODE_STARTS = [0, 72, 145, 218, 291]   # ~363 * [0, .2, .4, .6, .8]
 
