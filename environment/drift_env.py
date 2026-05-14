@@ -236,7 +236,7 @@ class DriftStreamEnv:
     #  RESET                                                               #
     # ------------------------------------------------------------------ #
 
-    def reset(self, start_batch: int = 0, mode: str = "train") -> tuple:
+    def reset(self, start_batch: int = 0, mode: str = "train", warm_model: 'LightGBM' = None) -> tuple:
         """
         Reset environment cho episode mới.
         - Retrain classifier từ đầu trên initial train data
@@ -255,8 +255,15 @@ class DriftStreamEnv:
             initial state tuple (đã discretize)
         """
         # Fresh model
-        X_train, y_train = self.loader.get_initial_train_data()
-        self.clf.train(X_train, y_train)
+        if warm_model is not None:
+            # [FIX 6] Dùng model đã warm-up thay vì train lại từ X_train
+            # → tất cả strategies bắt đầu test stream với cùng một model
+            self.clf.model      = copy.deepcopy(warm_model.model)
+            self.clf.is_trained = True
+            X_train, y_train    = self.loader.get_initial_train_data()
+        else:
+            X_train, y_train = self.loader.get_initial_train_data()
+            self.clf.train(X_train, y_train)
 
         # Reset metrics
         self.metrics.reset()
@@ -288,7 +295,7 @@ class DriftStreamEnv:
         elif mode == "test":
             self._batch_iterator = self.loader.stream_test_batches()
         elif mode == "all":
-            self._batch_iterator = self,loader.stream_batches()
+            self._batch_iterator = self.loader.stream_batches()
         else:
             raise ValueError(
                 f"mode='{mode}' không hợp lệ. Chọn: 'train' | 'test' | 'all'"
@@ -443,7 +450,7 @@ class DriftStreamEnv:
         # 7. Cập nhật GradientBandit nếu đang dùng
         # update_explorer=False khi MC Agent tự quản lý update sau episode
         if update_explorer and isinstance(self.explorer, GradientBandit) and pi is not None:
-            self.explorer.update(next_state, action, reward, pi)
+            self.explorer.update(curent_state, action, reward, pi)
 
         # 8. Build next state và info
         next_state = curent_state
