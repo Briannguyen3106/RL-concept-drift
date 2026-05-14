@@ -28,7 +28,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-import config as CFG   # import module để patch trực tiếp
+import config as CFG   # vẫn dùng cho CFG.RESULTS_DIR trong _save_results/_save_csv
 
 
 # ================================================================== #
@@ -57,24 +57,13 @@ FIXED = {
 #  HELPERS                                                             #
 # ================================================================== #
 
-def patch_config(params: dict) -> None:
+def make_components(reward_params: dict = None):
     """
-    Patch config module trực tiếp với params hiện tại.
-    Vì drift_env.py import từ config lúc runtime nên patch này có hiệu lực.
+    Tạo fresh instances của loader, clf, metrics, env, agent.
+    reward_params được truyền trực tiếp vào DriftStreamEnv constructor
+    thay vì patch module-level config (patch không có tác dụng vì
+    ACTION_COSTS đã được bind lúc import).
     """
-    CFG.ACTION_COSTS = {
-        "no_action"     : FIXED["no_action_cost"],
-        "partial_update": params["partial_update_cost"],
-        "full_retrain"  : FIXED["full_retrain_cost"],
-        "alert"         : FIXED["alert_cost"],
-        "switch_model"  : FIXED["switch_model_cost"],
-    }
-    CFG.DRIFT_MISS_PENALTY   = params["drift_miss_penalty"]
-    CFG.DRIFT_MISS_THRESHOLD = params["drift_miss_threshold"]
-
-
-def make_components():
-    """Tạo fresh instances của loader, clf, metrics, env, agent."""
     from utils.data_loader import AirlinesDataLoader
     from models.LightGBM import LightGBM
     from metrics.stream_metrics import StreamMetrics
@@ -84,7 +73,7 @@ def make_components():
     loader  = AirlinesDataLoader()
     clf     = LightGBM()
     metrics = StreamMetrics()
-    env     = DriftStreamEnv(loader, clf, metrics)
+    env     = DriftStreamEnv(loader, clf, metrics, reward_params=reward_params)
     agent   = MCAgent()
 
     return loader, clf, metrics, env, agent
@@ -216,6 +205,12 @@ def run_baselines(loader) -> dict:
         for X_batch, y_batch, idx in loader.stream_test_batches():
             window_buffer.append((X_batch, y_batch))
 
+            # [FIX] Predict/evaluate TRƯỚC khi retrain → tránh leakage
+            preds      = clf.predict(X_batch)
+            y_proba    = clf.predict_proba(X_batch)
+            error_rate = clf.get_error_rate(X_batch, y_batch)
+            metrics.update(y_batch.values, preds, error_rate, y_proba)
+
             if strategy == "periodic" and batch_count > 0 and batch_count % 50 == 0:
                 recent = list(window_buffer)
                 X_w = pd.concat([b[0] for b in recent], ignore_index=True)
@@ -234,10 +229,6 @@ def run_baselines(loader) -> dict:
                 clf.full_retrain(X_w, y_w)
                 retrain_count += 1
 
-            preds      = clf.predict(X_batch)
-            y_proba    = clf.predict_proba(X_batch)
-            error_rate = clf.get_error_rate(X_batch, y_batch)
-            metrics.update(y_batch.values, preds, error_rate, y_proba)
             batch_count += 1
 
         results[strategy] = {
@@ -337,11 +328,21 @@ def main():
 
         t_start = time.time()
 
-        # Patch config
-        patch_config(params)
+        # Build reward_params dict → truyền trực tiếp vào DriftStreamEnv
+        reward_params = {
+            "action_costs": {
+                "no_action"     : FIXED["no_action_cost"],
+                "partial_update": params["partial_update_cost"],
+                "full_retrain"  : FIXED["full_retrain_cost"],
+                "alert"         : FIXED["alert_cost"],
+                "switch_model"  : FIXED["switch_model_cost"],
+            },
+            "drift_miss_penalty"  : params["drift_miss_penalty"],
+            "drift_miss_threshold": params["drift_miss_threshold"],
+        }
 
-        # Fresh components
-        loader, clf, metrics, env, agent = make_components()
+        # Fresh components với reward_params đúng
+        loader, clf, metrics, env, agent = make_components(reward_params=reward_params)
 
         # Phase 1: Train
         print(f"[Phase 1] Training {FIXED['n_train_episodes']} episodes...")
@@ -351,6 +352,10 @@ def main():
         # Warm-up clf (không warm-up agent)
         print("[Warm-up] Retraining clf on last FULL_WINDOW_BATCHES batches...")
         warmup_clf(env.clf, loader)
+
+        # Reset metrics trước eval → tránh prequential_acc_history
+        # còn lịch sử từ training episodes
+        env.metrics.reset()
 
         # Phase 2: Evaluate
         print(f"[Phase 2] Evaluating {FIXED['n_eval_episodes']} episodes on test stream...")

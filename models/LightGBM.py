@@ -52,25 +52,21 @@ class LightGBM:
         return self.model.predict_proba(X)[:, 1]
     
     def full_retrain(self, X, y):
-        print(f"[Classifier] Full retrain on {len(X):,} samples...")
         self.model = self._build_model()
         self.model.fit(
             X, y,
             categorical_feature=CATEGORICAL_COLS
         )
         self.n_updates += 1
-        print(f"[Classifier] Full retrain complete. (update #{self.n_updates})")
 
     def partial_update(self, X, y):
-        print(f"[Classifier] Partial update on {len(X):,} samples (sliding window)...")
         self.model = self._build_model()
         self.model.fit(
             X, y,
             categorical_feature=CATEGORICAL_COLS
         )
         self.n_updates += 1
-        print(f"[Classifier] Partial update complete. (update #{self.n_updates})")
-    
+        
     def get_error_rate(self, X: pd.DataFrame, y: pd.Series) -> float:
         """
         Tính error rate trên một batch.

@@ -189,11 +189,17 @@ class DriftStreamEnv:
         loader  : AirlinesDataLoader,
         clf     : LightGBM,
         metrics : StreamMetrics,
+        reward_params = None
     ):
         self.loader  = loader
         self.clf     = clf
         self.metrics = metrics
-
+        
+        rp = reward_params or {}
+        self._action_cost           = rp.get('action_costs', ACTION_COSTS)
+        self._drift_miss_penalty    = rp.get("drift_miss_penalty", DRIFT_MISS_PENALTY)
+        self._drift_miss_threshold  = rp.get("drift_miss_threshold", DRIFT_MISS_THRESHOLD)
+        
         # Window buffer lưu (X_batch, y_batch) gần nhất
         self._window_buffer: deque = deque(maxlen=FULL_WINDOW_BATCHES)
 
@@ -279,23 +285,31 @@ class DriftStreamEnv:
         # Chọn batch iterator theo mode
         if mode == "train":
             self._batch_iterator = self.loader.stream_train_batches()
-            # Skip đến start_batch nếu cần (rotate starting points khi train)
-            if start_batch > 0:
-                for _ in range(start_batch):
-                    try:
-                        next(self._batch_iterator)
-                        self._current_batch_idx += 1
-                    except StopIteration:
-                        break
         elif mode == "test":
-            # Test stream luôn chạy toàn bộ từ đầu đến cuối, không skip
             self._batch_iterator = self.loader.stream_test_batches()
+        elif mode == "all":
+            self._batch_iterator = self,loader.stream_batches()
         else:
-            raise ValueError(f"mode='{mode}' không hợp lệ. Chọn: 'train' | 'test'")
-
-        # Decay epsilon sau mỗi episode (chỉ epsilon-greedy, chỉ khi train)
-        if mode == "train" and isinstance(self.explorer, EpsilonGreedy):
-            self.explorer.decay()
+            raise ValueError(
+                f"mode='{mode}' không hợp lệ. Chọn: 'train' | 'test' | 'all'"
+            )
+        
+        if start_batch > 0:
+            skipped = 0
+            for _ in range(start_batch):
+                try:
+                    next(self._batch_iterator)
+                    self._current_batch_idx += 1
+                    skipped += 1
+                except StopIteration:
+                    break
+            if skipped < start_batch:
+                import warnings
+                warnings.warn(
+                    f"start_batch={start_batch} vượt quá số batches trong stream "
+                    f"(chỉ skip được {skipped}). Episode sẽ rất ngắn.",
+                    RuntimeWarning 
+                )
 
         return self.metrics.get_state(self._time_since_update)
 
@@ -350,7 +364,8 @@ class DriftStreamEnv:
         """
         if self._done:
             raise RuntimeError("Episode đã kết thúc. Gọi reset() trước.")
-
+        
+        action_name = ACTIONS[action]
         # 1. Lấy batch tiếp theo
         try:
             X_batch, y_batch, batch_idx = next(self._batch_iterator)
@@ -368,8 +383,19 @@ class DriftStreamEnv:
         # 2. Thêm batch vào window buffer
         self._window_buffer.append((X_batch, y_batch))
 
-        # 3. Thực thi action
-        action_name      = ACTIONS[action]
+        # 3. get state
+        preds       = self.clf.predict(X_batch)
+        y_proba     = self.clf.predict_proba(X_batch)
+        error_rate  = self.clf.get_error_rate(X_batch, y_batch)
+
+        # 4. Update metrics()
+        self.metrics.update(y_batch.values, preds, error_rate, y_proba)
+
+        # 5. Tinh reward
+        reward = self._compute_reward(error_rate, action_name)
+        self._time_since_update += 1
+
+        # 6. Thực thi action
         checkpoint_saved = False
 
         if action_name == "no_action":
@@ -380,8 +406,6 @@ class DriftStreamEnv:
             self.clf.partial_update(X_w, y_w)
             self._time_since_update = 0
             self._alert_active      = False
-            # Reset PSI/KL reference về distribution của data vừa train
-            # → PSI đo drift so với model hiện tại, không phải model ban đầu
             self._reset_drift_reference(X_w, y_w)
 
         elif action_name == "full_retrain":
@@ -401,16 +425,12 @@ class DriftStreamEnv:
                 self.clf.is_trained = True
                 self._time_since_update = 0
                 self._alert_active      = False
+
+                X_w, y_w = self._get_window(PARTIAL_WINDOW_BATCHES)
+                self._reset_drift_reference(X_w, y_w)
             # Nếu chưa có checkpoint → treat như no_action
 
-        # 4. Predict và update metrics
-        preds      = self.clf.predict(X_batch)
-        y_proba    = self.clf.predict_proba(X_batch)
-        error_rate = self.clf.get_error_rate(X_batch, y_batch)
-
-        self.metrics.update(y_batch.values, preds, error_rate, y_proba)
-        self._time_since_update += 1
-
+        
         # 5. Cập nhật checkpoint
         rolling_acc = 1.0 - self.metrics.get_rolling_error()
         if rolling_acc > self._best_accuracy and rolling_acc >= CHECKPOINT_THRESHOLD:
@@ -418,17 +438,15 @@ class DriftStreamEnv:
             self._best_accuracy = rolling_acc
             checkpoint_saved    = True
 
-        # 6. Tính reward
-        reward = self._compute_reward(error_rate, action_name)
-
+        curent_state = self.metrics.get_state(self._time_since_update)
+        
         # 7. Cập nhật GradientBandit nếu đang dùng
         # update_explorer=False khi MC Agent tự quản lý update sau episode
         if update_explorer and isinstance(self.explorer, GradientBandit) and pi is not None:
-            next_state = self.metrics.get_state(self._time_since_update)
             self.explorer.update(next_state, action, reward, pi)
 
         # 8. Build next state và info
-        next_state = self.metrics.get_state(self._time_since_update)
+        next_state = curent_state
 
         info = {
             "batch_idx"        : batch_idx,
@@ -506,14 +524,14 @@ class DriftStreamEnv:
         R_penalty  = DRIFT_MISS_PENALTY nếu no_action và error_rate > threshold
         """
         r_accuracy = (1.0 - error_rate) * REWARD_ACCURACY_WEIGHT
-        r_cost     = ACTION_COSTS.get(action_name, 0.0)
+        r_cost     = self._action_cost.get(action_name, 0.0)
         r_penalty  = 0.0
 
-        if action_name == "no_action" and error_rate > DRIFT_MISS_THRESHOLD:
+        if action_name == "no_action" and error_rate > self._drift_miss_threshold:
             if self._alert_active:
-                r_penalty = DRIFT_MISS_PENALTY * 0.5  # Penalty nhẹ hơn
+                r_penalty = self._drift_miss_penalty * 0.5  # Penalty nhẹ hơn
             else:
-                r_penalty = DRIFT_MISS_PENALTY
+                r_penalty = self._drift_miss_penalty
         return r_accuracy - r_cost - r_penalty
 
     # ------------------------------------------------------------------ #

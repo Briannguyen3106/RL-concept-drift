@@ -5,7 +5,7 @@ import os
 import pickle
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import MC_GAMMA, MC_ALPHA, GRADIENT_BANDIT_BETA, MC_TEMP_START, MC_TEMP_END, MC_TEMP_DECAY
+from config import MC_GAMMA, MC_ALPHA, GRADIENT_BANDIT_BETA, MC_TEMP_START, MC_TEMP_END, MC_TEMP_DECAY, MC_EPISODE_STARTS
 from agents.base_agent import BaseAgent
 from environment.drift_env import DriftStreamEnv, GradientBandit, ACTIONS
 
@@ -158,7 +158,7 @@ class MCAgent(BaseAgent):
     #  RUN EPISODE                                                         #
     # ------------------------------------------------------------------ #
 
-    def run_episode(self, env: DriftStreamEnv, start_batch: int = 0) -> dict:
+    def run_episode(self, env: DriftStreamEnv, ep: int = 0) -> dict:
         """
         Chạy 1 episode hoàn chỉnh theo Every-visit MC.
 
@@ -175,11 +175,13 @@ class MCAgent(BaseAgent):
         Returns:
             dict chứa metrics của episode
         """
+        start_batch = MC_EPISODE_STARTS[ep % len(MC_EPISODE_STARTS)]
         # 1. Reset environment – fresh model mỗi episode
         state          = env.reset(start_batch=start_batch)
         episode_buffer = []
         total_reward   = 0.0
         action_counts  = {k: 0 for k in ACTIONS.values()}
+        info = {}
 
         # 2. Thu thập trajectory
         while not env.is_done:
@@ -203,7 +205,8 @@ class MCAgent(BaseAgent):
             state = next_state
 
         # 3 & 4. Tính returns và update H sau khi episode kết thúc
-        self.update(episode_buffer)
+        if episode_buffer:
+            self.update(episode_buffer)
 
         # Decay temperature sau mỗi episode
         self.temp = max(MC_TEMP_END, self.temp * MC_TEMP_DECAY)

@@ -5,7 +5,8 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import RANDOM_SEED, MC_EPISODE_STARTS
+from config import RANDOM_SEED
+from environment.drift_env import EpsilonGreedy
 
 
 class BaseAgent(ABC):
@@ -118,8 +119,7 @@ class BaseAgent(ABC):
         print(f"{'='*60}")
 
         for ep in range(n_episodes):
-            start_batch = MC_EPISODE_STARTS[ep % len(MC_EPISODE_STARTS)]
-            result = self.run_episode(env, start_batch=start_batch)
+            result = self.run_episode(env, ep)
 
             self.episode_rewards.append(result["total_reward"])
             self.episode_lengths.append(result["n_steps"])
@@ -127,6 +127,9 @@ class BaseAgent(ABC):
             # Cộng dồn action counts
             for action, count in result["action_counts"].items():
                 self.action_counts[action] += count
+
+            if isinstance(env.explorer, EpsilonGreedy):
+                env.explorer.decay()
 
             if verbose:
                 avg_reward = np.mean(self.episode_rewards[-10:])  # Moving avg 10 eps
@@ -136,6 +139,7 @@ class BaseAgent(ABC):
                     f"Avg(10): {avg_reward:>8.2f} | "
                     f"Steps: {result['n_steps']:>4}"
                 )
+            
 
         print(f"\nTraining complete!")
         print(f"  Final avg reward (last 10): {np.mean(self.episode_rewards[-10:]):.4f}")

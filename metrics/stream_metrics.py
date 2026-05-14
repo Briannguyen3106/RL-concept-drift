@@ -92,8 +92,8 @@ class DDMDetector:
             self.s_min = self.s
 
         if self.p + self.s > self.p_min + self.drift_level * self.s_min:
-            self.status = 2
-            self._reset_stats()
+            self._reset_stats()     # reset trước → status về 0
+            self.status = 2         # set lại sau → được giữ khi return
         elif self.p + self.s > self.p_min + self.warning_level * self.s_min:
             self.status = 1
         else:
@@ -109,21 +109,34 @@ class PSICalculator:
     """
     PSI: so sánh distribution của error rate giữa reference và current window.
     Output: PSI value (liên tục, >= 0)
+
+    Tự giữ internal window của error rates (maxlen = n_bins * 5 batches).
+    Window được reset khi set_reference() được gọi (sau mỗi lần retrain)
+    → PSI luôn đo drift so với lần retrain gần nhất, không tích lũy lịch sử cũ.
     """
 
     def __init__(self, n_bins: int = PSI_BINS):
         self.n_bins    = n_bins
         self.reference = None
         self.bin_edges = None
+        # Internal window: giữ đủ batches để histogram có ý nghĩa thống kê
+        # maxlen = n_bins * 5 là heuristic đảm bảo mỗi bin trung bình 5 điểm
+        self._window   = deque(maxlen=n_bins * 5)
 
     def set_reference(self, error_rates: list) -> None:
         counts, self.bin_edges = np.histogram(error_rates, bins=self.n_bins)
         self.reference = (counts + 1e-6) / (counts + 1e-6).sum()
+        # Seed window bằng reference data → PSI bắt đầu gần 0 ngay lập tức
+        # và tăng dần khi data thực sự drift, tránh vài batch đầu trả về 0.0
+        self._window.clear()
+        self._window.extend(error_rates)
 
-    def update(self, error_rates: list) -> float:
-        if self.reference is None or len(error_rates) < 2:
+    def update(self, error_rate: float) -> float:
+        """Nhận scalar error_rate của batch hiện tại, tự quản lý window."""
+        self._window.append(error_rate)
+        if self.reference is None or len(self._window) < 2:
             return 0.0
-        counts, _ = np.histogram(error_rates, bins=self.bin_edges)
+        counts, _ = np.histogram(list(self._window), bins=self.bin_edges)
         current   = (counts + 1e-6) / (counts + 1e-6).sum()
         psi = np.sum((current - self.reference) * np.log(current / self.reference))
         return float(max(psi, 0.0))
@@ -131,12 +144,16 @@ class PSICalculator:
     def reset(self) -> None:
         self.reference = None
         self.bin_edges = None
+        self._window.clear()
 
 
 class KLDivergenceCalculator:
     """
     Symmetric KL Divergence.
     Output: KL_sym value (liên tục, >= 0)
+
+    Tự giữ internal window, reset khi set_reference() được gọi.
+    Cùng design với PSICalculator.
     """
 
     def __init__(self, n_bins: int = KL_BINS, epsilon: float = KL_EPSILON):
@@ -144,16 +161,21 @@ class KLDivergenceCalculator:
         self.epsilon   = epsilon
         self.reference = None
         self.bin_edges = None
+        self._window   = deque(maxlen=n_bins * 5)
 
     def set_reference(self, error_rates: list) -> None:
         counts, self.bin_edges = np.histogram(error_rates, bins=self.n_bins)
         counts         = counts.astype(float) + self.epsilon
         self.reference = counts / counts.sum()
+        self._window.clear()
+        self._window.extend(error_rates)
 
-    def update(self, error_rates: list) -> float:
-        if self.reference is None or len(error_rates) < 2:
+    def update(self, error_rate: float) -> float:
+        """Nhận scalar error_rate của batch hiện tại, tự quản lý window."""
+        self._window.append(error_rate)
+        if self.reference is None or len(self._window) < 2:
             return 0.0
-        counts  = np.histogram(error_rates, bins=self.bin_edges)[0].astype(float) + self.epsilon
+        counts  = np.histogram(list(self._window), bins=self.bin_edges)[0].astype(float) + self.epsilon
         current = counts / counts.sum()
         kl_pq   = np.sum(self.reference * np.log(self.reference / current))
         kl_qp   = np.sum(current * np.log(current / self.reference))
@@ -162,6 +184,7 @@ class KLDivergenceCalculator:
     def reset(self) -> None:
         self.reference = None
         self.bin_edges = None
+        self._window.clear()
 
 
 # ================================================================== #
@@ -234,9 +257,7 @@ class StreamMetrics:
         """
         self._psi.set_reference(initial_error_rates)
         self._kl.set_reference(initial_error_rates)
-        print(f"[Metrics] Reference distribution set "
-              f"({len(initial_error_rates)} samples).")
-
+        
     # ------------------------------------------------------------------ #
     #  UPDATE                                                              #
     # ------------------------------------------------------------------ #
@@ -292,16 +313,14 @@ class StreamMetrics:
 
     def _compute_drift(self, error_rate: float) -> float:
         """Tính drift measure theo DRIFT_MEASURE trong config."""
-        error_window = list(self._error_rate_window)
-
         if DRIFT_MEASURE == "adwin":
             return self._adwin.update(error_rate)
         elif DRIFT_MEASURE == "ddm":
             return float(self._ddm.update(error_rate))
         elif DRIFT_MEASURE == "psi":
-            return self._psi.update(error_window)
+            return self._psi.update(error_rate)     # scalar, PSI tự quản lý window
         elif DRIFT_MEASURE == "kl":
-            return self._kl.update(error_window)
+            return self._kl.update(error_rate)      # scalar, KL tự quản lý window
         else:
             raise ValueError(
                 f"DRIFT_MEASURE='{DRIFT_MEASURE}' không hợp lệ. "
