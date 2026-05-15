@@ -67,13 +67,13 @@ REWARD_ACCURACY_WEIGHT = 1.0
 
 ACTION_COSTS = {
     'no_action' : 0.0,
-    'partial_update': 0.1,
+    'partial_update': 0.2,
     'full_retrain': 0.3,
 }
 
 # Penalty khi bỏ lỡ drift
-DRIFT_MISS_PENALTY    = 0.5     # Mức phạt
-DRIFT_MISS_THRESHOLD  = 0.40    # Error rate ngưỡng để coi là bỏ lỡ drift
+DRIFT_MISS_PENALTY    = 0.3    # Mức phạt
+DRIFT_MISS_THRESHOLD  = 0.50    # Error rate ngưỡng để coi là bỏ lỡ drift
 
 # Checkpoint: lưu model khi accuracy vượt ngưỡng này
 CHECKPOINT_THRESHOLD = 0.75
