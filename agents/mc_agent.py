@@ -191,6 +191,7 @@ class MCAgent(BaseAgent):
             # Step – tắt auto-update explorer vì MC tự update cuối episode
             next_state, reward, done, info = env.step(
                 action,
+                current_state   = state,
                 pi             = pi,
                 update_explorer = False     # MC tự update sau episode
             )

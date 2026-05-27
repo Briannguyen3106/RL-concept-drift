@@ -350,6 +350,7 @@ class DriftStreamEnv:
     def step(
         self,
         action          : int,
+        current_state    : tuple,
         pi              : Optional[np.ndarray] = None,
         update_explorer : bool = True,
     ) -> Tuple[tuple, float, bool, dict]:
@@ -358,6 +359,7 @@ class DriftStreamEnv:
 
         Args:
             action          : int (0-4)
+            current_state   : tuple (trạng thái hiện tại)
             pi              : softmax policy distribution (chỉ cần với GradientBandit)
             update_explorer : nếu False → không auto-update GradientBandit
                               Dùng False với MC Agent vì MC tự update
@@ -445,15 +447,14 @@ class DriftStreamEnv:
             self._best_accuracy = rolling_acc
             checkpoint_saved    = True
 
-        curent_state = self.metrics.get_state(self._time_since_update)
         
         # 7. Cập nhật GradientBandit nếu đang dùng
         # update_explorer=False khi MC Agent tự quản lý update sau episode
         if update_explorer and isinstance(self.explorer, GradientBandit) and pi is not None:
-            self.explorer.update(curent_state, action, reward, pi)
+            self.explorer.update(current_state, action, reward, pi)
 
         # 8. Build next state và info
-        next_state = curent_state
+        next_state = self.metrics.get_state(self._time_since_update)
 
         info = {
             "batch_idx"        : batch_idx,

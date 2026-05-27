@@ -111,7 +111,10 @@ def evaluate_agent(agent, env, loader, n_episodes: int) -> dict:
         while not env.is_done:
             action, pi = agent.select_action(state)
             next_state, reward, done, info = env.step(
-                action, pi=pi, update_explorer=False
+                action,
+                current_state   = state,
+                pi              = pi,
+                update_explorer = False
             )
             if done and "action_taken" not in info:
                 break
