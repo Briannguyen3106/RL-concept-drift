@@ -57,6 +57,7 @@ class LightGBM:
             X, y,
             categorical_feature=CATEGORICAL_COLS
         )
+        self.is_trained = True
         self.n_updates += 1
 
     def partial_update(self, X, y):
