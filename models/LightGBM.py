@@ -25,7 +25,7 @@ class LightGBM:
         self.params = {**self.DEFAULT_PARAMS, **(params or {})}
         self.model = None
         self.is_trained = False
-        self.n_update = 0
+        self.n_updates = 0
 
     def _build_model(self):
         return lgb.LGBMClassifier(**self.params)
