@@ -540,7 +540,7 @@ class DriftStreamEnv:
                 r_penalty = self._drift_miss_penalty * 0.5  # Penalty nhẹ hơn
             else:
                 r_penalty = self._drift_miss_penalty
-        return r_accuracy - r_cost - r_penalty
+        return 2*r_accuracy - r_cost - r_penalty
 
     # ------------------------------------------------------------------ #
     #  PROPERTIES                                                          #
